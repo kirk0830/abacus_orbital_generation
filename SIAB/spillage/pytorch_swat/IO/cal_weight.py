@@ -7,6 +7,7 @@ import operator
 def cal_weight(info_weight, flag_same_band, stru_file_list=None):
     """ weight[ist][ib] """
 
+    fistates = info_weight.get("fistates", None)
     if "bands_file" in info_weight.keys():
         if "bands_range" in info_weight.keys():
             raise IOError('"bands_file" and "bands_range" only once')
@@ -36,7 +37,7 @@ def cal_weight(info_weight, flag_same_band, stru_file_list=None):
 
 
     if not flag_same_band:
-        for ist,_ in enumerate(weight):
+        for ist, _ in enumerate(weight):
             weight[ist] = torch.tensordot(weight[ist], weight[ist], dims=0)
 
 

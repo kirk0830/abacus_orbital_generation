@@ -12,7 +12,9 @@ def ND_list(*sizes,element=None):
             for i in range(size_1):    
                 l[i] = eval(element)
     return l
-    
+
+def ndlist(*dims, element = None):
+    pass    
 
 def ignore_line(file,N):
     for _ in range(N):    
@@ -24,19 +26,18 @@ class Info:
     def __str__(self):
         return "\n".join([name+"\t"+str(value) for name,value in self.__dict__.items()])
     __repr__=__str__
-    
-def change_to_cuda(s):
-    if isinstance(s,list):
-        return [change_to_cuda(x) for x in s]
-    elif isinstance(s,dict):
-        return {i:change_to_cuda(x) for i,x in s.items()}
-    elif isinstance(s,torch.Tensor):
-        return s.cuda()
-    elif isinstance(s,torch_complex.ComplexTensor):
-        return torch_complex.ComplexTensor( change_to_cuda(s.real), change_to_cuda(s.imag) ) 
-    else:
-        print(s)
-        raise TypeError("change_to_cuda")
+
+def convert_tocuda(src):
+    """convert a casscatte of data to cuda, for list, dict, torch.Tensor, torch_complex.ComplexTensor"""
+    if isinstance(src, list):
+        return [convert_tocuda(x) for x in src]
+    if isinstance(src, dict):
+        return {i: convert_tocuda(x) for i, x in src.items()}
+    if isinstance(src, torch.Tensor):
+        return src.cuda()
+    if isinstance(src, torch_complex.ComplexTensor):
+        return torch_complex.ComplexTensor(src.real.cuda(), src.imag.cuda())
+    raise TypeError(f"Unexpected type of input: {type(src)}, only support list, dict, torch.Tensor, torch_complex.ComplexTensor and their nested structure.")
 
 def update0(t):
     return t.masked_fill(mask=(t==0), value=1E-10)

@@ -115,10 +115,8 @@ SIAB.pytorch_swat starts, numerical atomic orbitals are optimized.
     ###################################
     QI, SI, VI_origin = sspsirqsv.read_QSV(info_stru, info_element, file_list["origin"], V_info)
     if "linear" in file_list.keys():
-        QI_linear, SI_linear, VI_linear = list(zip(*(sspsirqsv.read_QSV(info_stru, 
-                                                                        info_element, 
-                                                                        file, 
-                                                                        V_info) for file in file_list["linear"])))
+        QI_linear, SI_linear, VI_linear = list(zip(*(sspsirqsv.read_QSV(info_stru, info_element, file, V_info)\
+                                                     for file in file_list["linear"])))
 	###################################
     # INITIALIZE COEFFICIENTS OF ORB  #
 	###################################
