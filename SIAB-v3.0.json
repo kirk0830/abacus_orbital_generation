@@ -1,0 +1,25 @@
+{
+    "AtomSpecies": [
+        {
+            "elem": "H",
+            "pseudo_name": "xxx",
+            "orbitals": [
+                {"rcut": },
+                {}
+            ]
+        }
+    ],
+    "TrainingSets": [
+        {
+            "elem": ["H"],
+            "proto": "dimer",
+            "pertkinds": ["stretch"],
+            "pertscale": [0.95, 1.05],
+            "basis_type": "pw",
+            "ecutwfc": 100,
+            "nspin": 1,
+            "kspacing": 0.1
+        },
+        {}
+    ]
+}

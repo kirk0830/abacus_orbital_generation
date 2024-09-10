@@ -181,15 +181,29 @@ def _orb_matrices(folder: str):
         yield f
 
 def _save_orb(coefs_tot, elem, ecut, rcut, nzeta, jY_type: str = "reduced"):
+    """
+    Plot the orbital and save .orb file
+
+    Parameter
+    ---------
+    coefs_tot: list of list of list of list of float
+        the coefficients of the orbitals [ilevel][it][l][zeta][q]: c (float)
+    elem: str
+        the element symbol
+    ecut: float
+        the energy cutoff
+    rcut: float
+        the cutoff radius
+    nzeta: list of list of int
+        
+    """
     import numpy as np
     import matplotlib.pyplot as plt
     from SIAB.spillage.plot import plot_chi
     from SIAB.spillage.orbio import write_nao, write_param
     from SIAB.spillage.radial import coeff_normalized2raw, coeff_reduced2raw
     import os, uuid
-    """
-    Plot the orbital and save .orb file
-    """
+
     assert len(nzeta) == len(coefs_tot)
     coeff_converter_map = {"reduced": coeff_reduced2raw, 
                            "normalized": coeff_normalized2raw}
@@ -220,6 +234,8 @@ def _save_orb(coefs_tot, elem, ecut, rcut, nzeta, jY_type: str = "reduced"):
         os.rename(forb, os.path.join(f"{folder}/{subfolder}", forb))
         os.rename(fparam, os.path.join(f"{folder}/{subfolder}", "ORBITAL_RESULTS.txt"))
         print(f"orbital saved as {forb}")
+    
+    return forb
 
 def _build_orb(coefs, rcut, dr: float = 0.01, jY_type: str = "reduced"):
     """build real space grid orbital based on the coefficients of the orbitals,
