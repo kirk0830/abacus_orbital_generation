@@ -1,3 +1,6 @@
+from SIAB.structure.atom_species_and_cell \
+    import AtomSpecies, Cell, AtomSpeciesGeneartor, CellGenerator
+
 class OrbitalMatrixCalculator:
     """orbital matrix calculator is designed as an ABACUS job manager to care for how to execute the series of
     ABACUS jobs to calculate the orbital matrix for orbital generation. 
@@ -31,6 +34,10 @@ class OrbitalMatrixCalculator:
     mode: str = "local-serial" # can be 'local-serial', 'local-parallel', 'remote-serial', 'remote-parallel'
 
     def __init__(self,
+                 asgens: list[AtomSpeciesGeneartor],
+                 proto: str,
+                 pertkind: str,
+                 pertmag: list|str,
                  mode: str = "local-serial"):
         """instantiate the class with qsub to submit the ABACUS job and qstat to check the job status.
         

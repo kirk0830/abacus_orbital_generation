@@ -206,7 +206,9 @@ def _save_orb(coefs,
     
     Return
     ------
-    str: the file name of the orbital    
+    str: the path of the saved orbital plot
+    str: the path of the saved orbital file
+    str: the path of the saved orbital parameters 
     """
     import numpy as np
     import matplotlib.pyplot as plt
@@ -230,17 +232,26 @@ def _save_orb(coefs,
     suffix = "".join([f"{len(coef)}{sym}" for coef, sym in zip(coefs, syms)])
 
     fpng = os.path.join(folder, f"{elem}_gga_{rcut}au_{ecut}Ry_{suffix}.png")
-    plot_chi(chi, r, save=fpng)
-    plt.close()
+    if not os.path.exists(fpng):
+        plot_chi(chi, r, save=fpng)
+        plt.close()
+    else:
+        print(f"NOTE: orbital plot {fpng} already exists, skip plotting")
 
     forb = fpng[:-4] + ".orb"
-    write_nao(forb, elem, ecut, rcut, len(r), dr, chi)
+    if not os.path.exists(forb):
+        write_nao(forb, elem, ecut, rcut, len(r), dr, chi)
+        print(f"orbital saved as {forb}")
+    else:
+        print(f"NOTE: orbital file {forb} already exists, skip writing")
     
     fparam = os.path.join(folder, "ORBITAL_RESULTS.txt")
-    write_param(fparam, coeff_converter_map[jY_type](coefs, rcut), rcut, 0.0, elem)
-    print(f"orbital saved as {forb}")
+    if not os.path.exists(fparam):
+        write_param(fparam, coeff_converter_map[jY_type](coefs, rcut), rcut, 0.0, elem)
+    else:
+        print(f"NOTE: orbital parameters {fparam} already exists, skip writing")
     
-    return forb
+    return fpng, forb, fparam
 
 def _build_orb(coefs, rcut, dr: float = 0.01, jY_type: str = "reduced"):
     """build real space grid orbital based on the coefficients of the orbitals,

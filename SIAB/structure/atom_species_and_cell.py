@@ -5,14 +5,12 @@ class AtomSpeciesGeneartor:
     symbol = None
     pseudo_dir = None
     pseudo_name = None
-    orbital_dir = None
-    orbital_name = None
 
     def __init__(self, 
                  symbol: str = None, 
-                 pseudo_dir: str = "./", 
+                 pseudo_dir: str = None,
                  pseudo_name: str = None,
-                 orbital_dir: str = None) -> None:
+                 ecutwfc: float = 100.0) -> None:
         """create one AtomSpeciesGenerator instance
         
         Parameters
@@ -34,54 +32,90 @@ class AtomSpeciesGeneartor:
             the path to the orbital directory where the numerical atomic orbitals are stored.
 
         """
-        import os
-        from SIAB.io.pseudopotential.api import ppinfo
-        # because there are non-standard or not-well-supported format of pseudopotential files
-        # , for those files, user should define variables on their own. The information can be
-        # get from pseudopotential file should be: symbol, valence electronic configuration, and
-        # valence charge. If user can provide them, then ppinfo will not be called.
-
-        read_pseudo = symbol is None or lmaxmax is None
+        self.symbol = symbol
+        self.pseudo_dir = pseudo_dir
+        self.pseudo_name = pseudo_name
+        self.ecutwfc = ecutwfc
 
         print(f"""AtomSpeciesGenerator setup
 Symbol: {self.symbol}
 Pseudopotential directory: {self.pseudo_dir}
 Pseudopotential file: {self.pseudo_name}
-Radial cutoffs for atomic basis: {self.bessel_nao_rcuts}
-Maximal angular momentum: {self.lmaxmax}
-Orbital directory: {self.orbital_dir}
 """)
 
-    def sphbesgen(self, ecut: float, rcuts: list, lmaxmax: int):
+    def _sphbes_gen(self, ecut: float, rcuts: list, lmaxmax: int, orbital_dir: str):
         """Generate the spherical Bessel functions and registered in the instance
-        self.orbital_name"""
+        self.orbital_name
+        
+        Parameters
+        ----------
+        ecut: float
+            the energy cutoff for the pseudopotential
+        rcuts: list
+            the radial cutoffs for the numerical atomic orbitals
+        lmaxmax: int
+            the maximal angular momentum for the numerical atomic orbitals
+        orbital_dir: str
+            the path to the orbital directory where the numerical atomic orbitals are stored
+        
+        Yields
+        ------
+        str
+            the name of the generated orbital
+        """
+        from SIAB.spillage.api import _coef_gen, _save_orb
+        for rcut in rcuts:
+            coef = _coef_gen(rcut, ecut, lmaxmax)[0]
+            yield _save_orb(coef, self.symbol, ecut, rcut, orbital_dir)
 
-    def __call__(self):
-        """iteratively create AtomSpecies instances"""
-        import itertools as it
-        from os.path import join as pjoin
-        pps = [self.pseudo_name]
+    def __call__(self,
+                 rcuts = None, 
+                 lmaxmax = None,
+                 orbital_dir = None):
+        """iteratively create AtomSpecies instances
+        Upon the definition of AtomSpeciesGenerator, which only bundle itself with one
+        specific pseudopotential, the jY basis generation is then conditional: it can
+        be reused for multiple AtomSpecies instances.
 
+        Only when all parameters are provided, the jY basis will be generated. If not,
+        the AtomSpecies instance will be generated without the jY basis.
+
+        Parameters
+        ----------
+        rcuts: list
+            the radial cutoffs for the numerical atomic orbitals, optional, default is None
+        lmaxmax: int
+            the maximal angular momentum for the numerical atomic orbitals, optional, default is None
+        orbital_dir: str
+            the path to the orbital directory where the numerical atomic orbitals are stored, optional, default is None
+
+        Returns
+        -------
+        AtomSpecies
+            the generated AtomSpecies instance
+        """
         import SIAB.data.interface as database
+        import os
         name = self.symbol
         fullname = database.PERIODIC_TABLE_TOFULLNAME[self.symbol]
         index = database.PERIODIC_TABLE_TOINDEX[self.symbol]
         rcovalent = database.RCOVALENT[self.symbol]
         mass = 1.0000 # hard code for now, cannot be used on MD simulation
         magmom = 0.0
-        
-        for pp in pps:
-            init_set = {"name": name, "fullname": fullname, "symbol": self.symbol, "index": index,
-                        "rcovalent": rcovalent, "mass": mass, "magmom": magmom, "pp": pp, "nao": None}
 
-            if self.orbital_dir is not None and self.naotags is not None:
-                searcher = TagSearcher(pjoin(self.orbital_dir, 'database.json'))
-                naos = searcher(False, False, *(list(set(self.naotags + [pp]))))
-                for pp, nao in it.product(pps, naos):
-                    init_set.update({"nao": nao})
-                    yield AtomSpecies(**init_set)
-            else:
+        init_set = {"name": name, "fullname": fullname, "symbol": self.symbol, 
+                    "index": index, "rcovalent": rcovalent, "mass": mass, "magmom": magmom, 
+                    "pp": os.path.join(self.pseudo_dir, self.pseudo_name),
+                    "nao": None, 
+                    "ecutwfc": self.ecutwfc}
+
+        jygen = all([rcuts, lmaxmax, orbital_dir])
+        if jygen:
+            for _, forb, _ in self._sphbes_gen(self.ecutwfc, rcuts, lmaxmax, orbital_dir):
+                init_set.update({"nao": forb})
                 yield AtomSpecies(**init_set)
+        else:
+            yield AtomSpecies(**init_set)
 
     def inflate(folded: dict):
         """expand the folded dict to the full dict if there are __element__ and __tags__
@@ -92,6 +126,13 @@ Orbital directory: {self.orbital_dir}
         for element in folded.get("__element__", []):
             plain.update({element: folded.get("__tags__", [])}) if element not in plain else None
         return plain
+
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, AtomSpeciesGeneartor):
+            return False
+        return self.symbol == value.symbol and \
+            self.pseudo_dir == value.pseudo_dir and \
+                self.pseudo_name == value.pseudo_name
 
 class AtomSpecies:
     """A element with specific pseudopotential and numerical atomic orbital file corresponds to
@@ -124,6 +165,11 @@ class AtomSpecies:
         return {"name": self.label, "fullname": self.fullname, "symbol": self.symbol,
                 "index": self.index, "rcovalent": self.rcovalent, "mass": self.mass,
                 "magmom": self.magmom, "pp": self.pp, "ecutwfc": self.ecutwfc, "nao": self.nao}
+
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, AtomSpecies):
+            return False
+        return self.as_dict() == value.as_dict
 
 class CellGenerator:
     """Python-Generator enpowered generator for generating Cell instances based on the
@@ -224,7 +270,6 @@ Magnetic moments: {self.magmoms}
         unpertmag = scale if self.identifier == "molecule" else 1.0
         # for cif and bravis, can perform more kinds of perturbation, we will do it in the following
         param = build_func(self.config, unpertmag, kspacing)
-        param["coords"] = param["coords"].tolist()
         if self.magmoms is not None:
             param["labels"] = CellGenerator.divide_subset(param["coords"], param["kinds"], self.magmoms, param["labels_kinds_map"])
             param["magmoms"] = self.magmoms
@@ -253,8 +298,8 @@ Magnetic moments: {self.magmoms}
         coords = np.array([cif[f"_atom_site_fract_{i}"] for i in ["x", "y", "z"]]
                           ).T.astype(float).tolist()
         magmoms = [0] * len(coords)
-        a, b, c = [i*scale**(1/3) for i in [float(cif[f"_cell_length_{i}"]) for i in ['a', 'b', 'c']]]
-        alpha, beta, gamma = [float(cif[f"_cell_angle_{i}"]) for i in ['alpha', 'beta', 'gamma']]
+        a, b, c = [i*scale**(1/3) for i in [float(cif[f"_cell_length_{i}"][0]) for i in ['a', 'b', 'c']]]
+        alpha, beta, gamma = [float(cif[f"_cell_angle_{i}"][0]) for i in ['alpha', 'beta', 'gamma']]
 
         # difference with APNS: because the band-structure calculation is rarely used in orbital generation
         # tasks, we do not support this by introducing another dependency.
@@ -293,7 +338,7 @@ Magnetic moments: {self.magmoms}
         keys = ['a', 'b', 'c', 'alpha', 'beta', 'gamma', 'labels', 'kinds', 'labels_kinds_map', \
                 'coords', 'magmoms', 'sym_ks', 'possible_kpath', 'mpmesh_nks', 'periodic']
         vals = [a, b, c, alpha, beta, gamma, labels, kinds, labels_kinds_map, \
-                coords, magmoms, sym_ks, possible_kpath, mpmesh_nks, True]
+                coords.tolist(), magmoms, sym_ks, possible_kpath, mpmesh_nks, True]
         return dict(zip(keys, vals))
 
     def build_molecule(molecule: int, bond_length: float, kspacing: float = -1.0):
@@ -309,7 +354,7 @@ Magnetic moments: {self.magmoms}
         keys = ['a', 'b', 'c', 'alpha', 'beta', 'gamma', 'labels', 'kinds', 'labels_kinds_map', \
                 'coords', 'magmoms', 'sym_ks', 'possible_kpath', 'mpmesh_nks', 'periodic']
         vals = [a, b, c, alpha, beta, gamma, labels, kinds, labels_kinds_map, \
-                coords, magmoms, sym_ks, possible_kpath, mpmesh_nks, False]
+                coords.tolist(), magmoms, sym_ks, possible_kpath, mpmesh_nks, False]
         return dict(zip(keys, vals))
 
     def divide_subset(fullset: list, dividee: list, divider: list, dividee_fullset_map: list):
@@ -352,6 +397,16 @@ Magnetic moments: {self.magmoms}
         e33 = np.sqrt(c**2 - e31**2 - e32**2)
         return np.array([[e11, e12, e13], [e21, e22, e23], [e31, e32, e33]])\
             if not as_list else [[e11, e12, e13], [e21, e22, e23], [e31, e32, e33]]
+
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, CellGenerator):
+            return False
+        return self.identifier == value.identifier and \
+            self.config == value.config and \
+            self.pertkind == value.pertkind and \
+            self.pertmags == value.pertmags and \
+            self.kspacing == value.kspacing and \
+            self.magmoms == value.magmoms
 
 class Cell:
     """# Cell
@@ -417,6 +472,11 @@ labels: {self.labels}, \nkinds: {self.kinds}, \nlabels_kinds_map: {self.labels_k
                 "sym_ks": self.sym_ks, "possible_kpath": self.possible_kpath, "mpmesh_nks": self.mpmesh_nks,
                 "coords": self.coords, "vels": self.vels, "magmoms": self.magmoms, "mobs": self.mobs,
                 "labels": self.labels, "kinds": self.kinds, "labels_kinds_map": self.labels_kinds_map, "periodic": self.periodic}
+
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, Cell):
+            return False
+        return self.as_dict() == value.as_dict()
 
 class CellTransformer:
     """transform the Cell object with certain kind of perturbation.
@@ -572,41 +632,42 @@ import unittest
 class TestAtomSpeciesGenerator(unittest.TestCase):
 
     def test_constructor(self):
-        asg = AtomSpeciesGeneartor('Si', "", [])
+        asg = AtomSpeciesGeneartor('Si', 
+                                   "test_atom_species_generator_pseudo_dir", 
+                                   "test_atom_species_generator_fpseudo")
         self.assertEqual(asg.symbol, 'Si')
-        self.assertEqual(asg.pseudo_dir, "")
-        self.assertEqual(asg.pptags, [])
-        self.assertEqual(asg.orbital_dir, None)
-        self.assertEqual(asg.naotags, None)
+        self.assertEqual(asg.pseudo_dir, "test_atom_species_generator_pseudo_dir")
+        self.assertEqual(asg.pseudo_name, "test_atom_species_generator_fpseudo")
     
     def test_oncall(self):
         import os
-        import json
-        # prepare a fake database
-        database = {"the_file_name_with_path": ["tag1", "tag2", "Si"]}
-        fdatabase = "./database.json"
-        with open(fdatabase, "w") as f:
-            json.dump(database, f)
-        asg = AtomSpeciesGeneartor('Si', "./", ["tag1", "tag2"])
-        times = 0
+        asg = AtomSpeciesGeneartor('Si', 
+                                   "test_atom_species_generator_pseudo_dir", 
+                                   "test_atom_species_generator_fpseudo")
+        # first test the purely pseudopotential case
+        nas = 0
         for as_ in asg():
-            times += 1
-            self.assertEqual(as_.pp, "the_file_name_with_path")
-        self.assertEqual(times, 1)
-        os.remove(fdatabase)
+            self.assertEqual(as_.symbol, 'Si')
+            self.assertEqual(as_.pp, "test_atom_species_generator_fpseudo")
+            self.assertEqual(as_.nao, None)
+            self.assertEqual(as_.ecutwfc, 100)
+            nas += 1
+        self.assertEqual(nas, 1)
+        # then test the on-the-fly jy basis generation case
+        nas = 0
+        for as_ in asg([6, 7, 8], 2, os.getcwd()):
+            self.assertEqual(as_.symbol, 'Si')
+            self.assertEqual(as_.pp, "test_atom_species_generator_fpseudo")
+            forb = as_.nao
+            self.assertEqual(os.path.exists(forb), True)
+            fpng = forb[:-4] + ".png"
+            fparams = os.path.join(os.path.dirname(forb), "ORBITAL_RESULTS.txt")
+            nas += 1
 
-        asg = AtomSpeciesGeneartor('Si', "/root/abacus-develop/pseudopotentials/", ["Si", "PBE", "NC", "sg15", "sr"])
-        times = 0
-        ref = {'/root/abacus-develop/pseudopotentials/sg15_oncv_upf_2020-02-06/Si_ONCV_PBE-1.2.upf', 
-               '/root/abacus-develop/pseudopotentials/sg15_oncv_upf_2020-02-06/Si_ONCV_PBE-1.0.upf', 
-               '/root/abacus-develop/pseudopotentials/sg15_oncv_upf_2020-02-06/Si_ONCV_PBE-1.1.upf'}
-        result = []
-        for as_ in asg():
-            result.append(as_.pp)
-            times += 1
-        result = set(result)
-        self.assertEqual(result, ref)
-        self.assertEqual(times, 3)
+            os.remove(forb)
+            os.remove(fpng)
+            os.remove(fparams)
+        self.assertEqual(nas, 3)
 
     def test_inflate(self):
         folded = {"__element__": ["Si", "Ge"], "__tags__": ["tag1", "tag2"]}
