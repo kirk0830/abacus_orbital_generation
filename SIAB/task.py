@@ -172,32 +172,57 @@ class SpillageOptimization(Task):
 class TaskGroup:
     """a group of tasks"""
     tasks: list[Task]
+    status: str
 
-    def __init__(self) -> None:
-        self.tasks = []
+    def __init__(self, recipe: list) -> None:
+        self.status = "initialized"
+        self.tasks = self._build_tasks(recipe)
+
+    def _build_tasks(self, recipe: list) -> list[Task]:
+        """build tasks based on the recipe"""
+        return []
 
     def append(self, task: Task) -> None:
         self.tasks.append(task)
 
-    def initialize(self) -> None:
+    def initialize(self, upstream) -> None:
         """initialize the taskgroup based on the previous taskgroup"""
         pass
+
+    def check_status(self):
+        """check the status of the taskgroup"""
+        if all([task.check_status() == "finished" for task in self.tasks]):
+            self.status = "finished"
+        elif any([task.check_status() == "running" for task in self.tasks]):
+            self.status = "running"
+        else:
+            self.status = "initialized"
+        return self.status
 
     def finalize(self) -> None:
         """after complete all tasks defined, run this function"""
         pass
 
 class ASGenStage(TaskGroup):
-    """run all AtomSpeciesGeneration tasks required by some OMCal tasks in parallel"""
+    """run all AtomSpeciesGeneration tasks required by some OMCal tasks in parallel.
+    For each AtomSpecies, the following keys are required:
+    Compulsory: elem (str), fpseudo (str), ecutwfc (float), 
+    Optional: orbital_dir (str), rcut (float), lmax (int).
+    
+    Organize them in a dict for each AtomSpecies, and store in a list as `recipe`
+    to instantiate the ASGenStage."""
 
     results: list[AtomSpecies]
-    def __init__(self, recipe: list[dict]) -> None:
+
+    def _build_tasks(self, recipe: list[dict]):
         keys = ["elem", "fpseudo", "ecutwfc", "orbital_dir", "rcut", "lmax"]
         extractor = lambda x: dict(zip(keys, [x.get(k, None) for k in keys]))
         recipe_ = [extractor(r) for r in recipe]
-        self.tasks = [AtomSpeciesGeneration(**r) for r in recipe_]
+        return [AtomSpeciesGeneration(**r) for r in recipe_]
 
-    def run(self) -> None:
+    def run(self):
+        """the run of AtomSpeciesGeneration will be trivial in time-consuming,
+        so it is okay to directly run them in sequence, directly implement"""
         self.results = [task.run() for task in self.tasks]
         assert all([task.check_status() == "finished" for task in self.tasks])
 
@@ -205,10 +230,24 @@ class ASGenStage(TaskGroup):
         return self.results
 
 class OMCalStage(TaskGroup):
-    """initialize spillage"""
+    """run all independent Orbital Matrix Calculation tasks, register to
+    the TaskServer"""
 
-    def __init__(self, tasks: list[OrbitalMatrixCalculation]) -> None:
-        super().__init__(tasks)
+    limit: int
+    
+    def _build_tasks(self, recipe: list):
+        """build tasks for the TaskGroup to run and manage, for OMCalStage,
+        the recipe is a list of fixed dict like
+        {}
+        """
+
+    def initialize(self, upstream: ASGenStage):
+        pass
+
+    def run(self) -> None:
+        """submit a series of orbital matrix calculation tasks. For this
+        specific task, usually it is quite time-consuming, so the task"""
+        pass
 
 class SOptStage(TaskGroup):
     """prerequisite for spillage"""
@@ -225,16 +264,14 @@ class SOptStage(TaskGroup):
 
 class TreeProcess:
     """a tree-like process"""
+
     plan: list[TaskGroup]
+    status: str
     def __init__(self, groups: list[TaskGroup]) -> None:
+        
         pass
 
     def run(self) -> None:
-        pass
-
-class OrbgenProcess(TreeProcess):
-    """generate orbitals"""
-    def __init__(self, groups: list[TaskGroup]) -> None:
         pass
 
 import unittest
@@ -322,7 +359,8 @@ class TestASGenStage(unittest.TestCase):
             self.assertEqual(a.as_dict(), asref[ia])
         
 class TestOrbitalMatrixCalculation(unittest.TestCase):
-    
+    """the test on orbitam matrix calculation is actually test the use of subprocess,
+    let a task can instantly run and check its status"""
     def test_constructor(self):
         asgen_pw = AtomSpeciesGeneration("Si", "/root/pseudo/Si.pbe-n-rrkjus_psl.1.0.0.UPF", 100.0)
         a_pw = asgen_pw.run()
@@ -375,5 +413,5 @@ if __name__ == "__main__":
     dftinit = ASGenStage([asgen])
     spillinit = OMCalStage([abacus])
     spillopt = SOptStage([spillage])
-    orbgen = OrbgenProcess([dftinit, spillinit, spillopt])
+    orbgen = TreeProcess([dftinit, spillinit, spillopt])
     orbgen.run()
