@@ -8,51 +8,111 @@ from numpy import ceil
 import unittest
 import uuid
 
-def read_siab_plaintext(fname: str = ""):
-    keyvalue_pattern = r"^(\w+)(\s+)([^#]*)(#.*)?"
-    float_pattern = r"^\d+\.\d*$"
-    int_pattern = r"^\d+$"
-    scalar_keywords = ["Ecut", "sigma", "element"]
-    result = {}
-    if fname == "":
-        raise ValueError("No filename provided")
-    with open(fname, "r") as f:
+def _txt_parse(fn):
+    """read siab input script in plaintext format
+    
+    Parameters
+    ----------
+    fn: str
+        the filename of the input script
+    
+    Returns
+    -------
+    dict
+        the parsed input script stored in a dictionary
+    
+    Notes
+    -----
+    This format will be deprecated in the future, therefore developer
+    should not implement further features based on this format.
+    """
+    print(f"WARNING: the plaintext format of ABACUS-ORBGEN is not recommended anymore\
+, some new features may be not well-supported. Please use JSON format instead", flush=True)
+    
+    with open(fn, "r") as f:
         lines = f.readlines()
+    
+    result = {}
     for line in lines:
         line = line.strip()
-        _match = re.match(keyvalue_pattern, line)
-        if _match:
-            key = _match.group(1).strip()
-            value = _match.group(3).strip().split()
-            value = [float(v) if re.match(float_pattern, v) else int(v) if re.match(int_pattern, v) else v for v in value]
-            result[key] = value if key not in scalar_keywords else value[0]
+        m = re.match(r"^(\w+)(\s+)([^#]*)(#.*)?", line)
+        if m:
+            key = m.group(1).strip()
+            value = m.group(3).strip().split()
+            value = [float(v) if re.match(r"^\d+\.\d*$", v) else int(v)\
+                      if re.match(r"^\d+$", v) else v for v in value]
+            result[key] = value if key not in ["Ecut", "sigma", "element"] else value[0]
     
     return result
 
-def read_siab_json(fname: str = ""):
-    """parse SIAB_INPUT file with version 0.2.0 in json format"""
-    with open(fname, "r") as f:
+def _json_parse(fn):
+    """read ABACUS-ORBGEN input script organized in JSON format
+    
+    Parameters
+    ----------
+    fn: str
+        the filename of the input script
+    
+    Returns
+    -------
+    dict
+        the parsed input script stored in a dictionary
+    """
+    with open(fn, "r") as f:
         result = json.load(f)
     return result
 
-def read(fname: str = "", version: str = "0.1.0"):
-    """default value setting is absent"""
-    print(f"""
-Parsing SIAB input file {fname} with version {version}
-""")
-    if fname.endswith(".json"):
-        result = read_siab_json(fname)
-    else:
-        result = read_siab_plaintext(fname)
-        result = postprocess_siab_oldinp(result) if version == "0.1.0" else result
-        result = convert_oldinp_tojson(result) if version == "0.1.0" else result
-        result = convert_plaintext_tojson(result) if version != "0.1.0" else result
-    # convert `pseudo_dir` to absolute path
-    result["pseudo_dir"] = os.path.abspath(result["pseudo_dir"])
-    return result
+def read(fn, version = "2.0"):
+    """parse the input script of ABACUS-ORBGEN
+    
+    Parameters
+    ----------
+    fn: str
+        the filename of the input script
+    version: str
+        the version of the input script, default is "2.0", can also be
+        "2.0+" or "3.0", but "2.0+" will trigger a warning message.
+    
+    Returns
+    -------
+    dict
+        the parsed input script stored in a dictionary
+    """
+    assert isinstance(version, str), "version should be a string"
+    print(f"READ: parse input script of ABACUS-ORBGEN: {fn}", flush=True)
 
-def postprocess_siab_oldinp(inp: dict):
-    """the parsed input initially might be like:
+    if fn.endswith(".json"):
+        try:
+            out = _json_parse(fn)
+        except json.JSONDecodeError:
+            print("ERROR: JSONDecodeError, try to read as plaintext", flush=True)
+            out = _txt_parse(fn)
+    else:
+        out = _txt_parse(fn)
+        if version == "2.0":
+            print(f"READ: SIAB-2.0 (Pytorch-PTG) format is detected", flush=True)
+            out = _txt_old_conv(_txt_old_clean(out))
+        else: # a newer version of input script
+            print(f"READ: SIAB-2.0+ format is detected", flush=True)
+            out = _txt_conv(out)
+
+    return out|{"pseudo_dir": os.path.abspath(out.get("pseudo_dir", "."))}
+
+def _txt_old_clean(old: dict):
+    """
+    Parameters
+    ----------
+    old: dict
+        the parsed input script in plaintext format
+    
+    Returns
+    -------
+    dict
+        the cleaned input script
+    
+    Notes
+    -----
+    the parsed input initially might be like:
     ```json
     {
         "EXE_mpi": ["mpirun", "-np", 1],
@@ -77,36 +137,65 @@ def postprocess_siab_oldinp(inp: dict):
     However, the value of EXE_mpi and EXE_pw are not expected to be list, but string.
     """
     # the optimizer path is not really used, impose default values for it
-    inp["EXE_opt"] = inp.get("EXE_opt", "")
-    inp["EXE_opt"] = "/opt_orb_pytorch_dpsi/main.py (default)" if inp["EXE_opt"] == "" else inp["EXE_opt"]
-    # EXE_env
-    inp["EXE_env"] = inp.get("EXE_env", "")
-    # EXE_pw: concatenate the command
-    exe_pw = " ".join([str(word) for word in inp["EXE_pw"]]).replace("\\", "/")
-    inp["EXE_pw"] = exe_pw
-    # EXE_mpi: concatenate the command
-    exe_mpi = " ".join([str(word) for word in inp["EXE_mpi"]]).replace("\\", "/")
-    inp["EXE_mpi"] = exe_mpi
-    # drop the [] from list
-    pseudo_dir = inp["Pseudo_dir"][0].strip().replace("\\", "/")
-    pseudo_dir = pseudo_dir[:-1] if pseudo_dir.endswith("/") else pseudo_dir
-    inp["Pseudo_dir"] = pseudo_dir
-    # drop the [] from list
-    fpseudo = inp["Pseudo_name"][0].strip().replace("\\", "").replace("/", "")
-    inp["Pseudo_name"] = fpseudo
-    # drop the [] from list
-    inp["max_steps"] = int(inp["max_steps"][0])
-    
-    return inp
 
-def translate_oldinp_keyword(keyword: str):
-    """translate the old version keywords to new version keywords"""
+    old["EXE_opt"] = old.get("EXE_opt", "")
+    old["EXE_opt"] = "/opt_orb_pytorch_dpsi/main.py (default)" if old["EXE_opt"] == "" else old["EXE_opt"]
+
+    # EXE_env
+    old["EXE_env"] = old.get("EXE_env", "")
+
+    # EXE_pw: concatenate the command
+    exe_pw = " ".join([str(word) for word in old["EXE_pw"]]).replace("\\", "/")
+    old["EXE_pw"] = exe_pw
+
+    # EXE_mpi: concatenate the command
+    exe_mpi = " ".join([str(word) for word in old["EXE_mpi"]]).replace("\\", "/")
+    old["EXE_mpi"] = exe_mpi
+
+    # drop the [] from list
+    pseudo_dir = old["Pseudo_dir"][0].strip().replace("\\", "/")
+    pseudo_dir = pseudo_dir[:-1] if pseudo_dir.endswith("/") else pseudo_dir
+    old["Pseudo_dir"] = pseudo_dir
+
+    # drop the [] from list
+    fpseudo = old["Pseudo_name"][0].strip().replace("\\", "").replace("/", "")
+    old["Pseudo_name"] = fpseudo
+
+    # drop the [] from list
+    old["max_steps"] = int(old["max_steps"][0])
+    
+    return old
+
+def _key_mapping(keyword: str):
+    """translate the old version keywords to new version keywords
+    
+    Parameters
+    ----------
+    keyword: str
+        the keyword to be translated
+    
+    Returns
+    -------
+    str
+        the translated keyword, if not found, return the original keyword
+    """
     dictionary = {"Ecut": "ecutwfc", "Rcut": "bessel_nao_rcut", 
                   "Pseudo_dir": "pseudo_dir", "sigma": "smearing_sigma"}
     return dictionary.get(keyword, keyword)
 
-def convert_oldinp_tojson(inp: dict):
-    """convert the old version input contents to new version"""
+def _txt_old_conv(inp: dict):
+    """convert the old version input contents to new version
+    
+    Parameters
+    ----------
+    inp: dict
+        the old version input contents
+    
+    Returns
+    -------
+    dict
+        the new version input contents
+    """
     result = {
         "reference_systems": [],
         "orbitals": []
@@ -139,68 +228,108 @@ def convert_oldinp_tojson(inp: dict):
 
     return result
 
-def convert_plaintext_tojson(inp: dict):
-    """especially for version 0.2.0"""
+def _txt_conv(inp: dict):
+    """convert dict read from previous versions to the latest version
+    
+    Parameters
+    ----------
+    inp: dict
+        the dict read from previous versions
+    
+    Returns
+    -------
+    dict
+        the dict converted to the latest version
+    """
     
     shapes = ["dimer", "trimer", "tetramer"]
-
-    def is_reference_systems_line(key, value):
-        if key in shapes:
-            if len(value) == 3:
-                if value[0].isdigit():
-                    if value[1].isdigit():
-                        if isinstance(value[2], list):
-                            return True
+    print("WARNING: for out-dated version of input script, several features\
+are not supported well, the shape of reference systems should be specified as\
+`dimer`, `trimer`, `tetramer`, others are not supported.", flush=True)
+    
+    # a tool function to check if it is the reference system specifying line
+    def _lconf(key, value):
+        if key in shapes and len(value) == 3:
+            if all([value[0].isdigit(), 
+                    value[1].isdigit(), 
+                    isinstance(value[2], list)]):
+                return True
         return False
     
-    def is_orbitals_line(key, value):
-        zeta_pattern = r"^(\s*)([SDTQ56789]?Z([SDTQ56789]?P)?)"
-        match = re.match(zeta_pattern, key)
-        if match:
-            if len(value) == 3:
-                if value[0] in shapes:
-                    if value[1].isdigit():
-                        if value[2] == "none" or re.match(zeta_pattern, value[2]):
-                            return True
+    # a tool function to check if it is the orbital specifying line
+    def _lorb(key, value):
+        pat = r"^(\s*)([SDTQ56789]?Z([SDTQ56789]?P)?)"
+        if re.match(pat, key) and len(value) == 3:
+            if all([value[0] in shapes,
+                    value[1].isdigit(),
+                    value[2] == "none" or re.match(pat, value[2])]):
+                return True
         return False
 
-    result = {
-        "reference_systems": [],
-        "orbitals": []
-    }
+    out = dict(zip(["reference_systems", "orbitals"], [[], []]))
     for key, value in inp.items():
-        if is_reference_systems_line(key, value):
-            result["reference_systems"].append({
+        if _lconf(key, value):
+            out["reference_systems"].append({
                 "shape": key,
                 "nbands": int(value[0]),
                 "nspin": int(value[1]),
                 "bond_lengths": value[2]
             })
-        elif is_orbitals_line(key, value):
-            result["orbitals"].append({
+        elif _lorb(key, value):
+            out["orbitals"].append({
                 "zeta_notation": key,
                 "shape": value[0],
                 "nbands_ref": int(value[1]),
                 "orb_ref": value[2]
             })
         else:
-            result[key] = value
+            out[key] = value
+    return out
 
-def natom_from_shape(shape: str):
+def _nat_from_shape(shape: str):
+    """return the number of atoms of pre-defined shape
+    
+    Parameters
+    ----------
+    shape: str
+        the shape of the reference system
+    
+    Returns
+    -------
+    int
+        the number of atoms in the reference system, if the shape is not
+        recognized, return 0
+    """
     natom = {"monomer": 1, "dimer": 2, "trimer": 3, "tetrahedron": 4, 
              "square": 4, "triangular_bipyramid": 5, "octahedron": 6, "cube": 8}
     return natom.get(shape, 0)
 
-def nbands_from_str(option: str|float|int, shape: str, z_val: float):
-
+def _nbands_from_str(option: str|float|int, shape: str, z: float):
+    """calculate number of bands (nbands) to calculate for a reference system
+    
+    Parameters
+    ----------
+    option: str or int
+        the option for nbands, can be "auto", "occ", "occ+n", "occ-n" or "all"
+    shape: str
+        the shape of the reference system
+    z: float
+        the valence electron number of the element. Commonly it is read from
+        pseudopotential file.
+    
+    Returns
+    -------
+    int
+        the number of bands to calculate
+    """
     if isinstance(option, str):
         assert re.match(r"(auto|occ((\+|-)\d+)?|all)", option), f"option should be auto, occ, occ+/-n or all: {option}"
         if option == "auto":
             return "auto"
         if option == "all":
-            return int(max(natom_from_shape(shape)*z_val, 2))
+            return int(max(_nat_from_shape(shape)*z, 2))
         if option.startswith("occ"):
-            occ = int(max(natom_from_shape(shape)*z_val/2, 1))
+            occ = int(max(_nat_from_shape(shape)*z/2, 1))
             return eval(option.replace("occ", str(occ)))
     return int(option)
 
@@ -255,7 +384,7 @@ def abacus_settings(user_settings: dict, minimal_basis: list = None, z_val: floa
         nbands = refsys[irs].get("nbands", "auto")
         if nbands == "auto":
             shape = refsys[irs]["shape"]
-            nelec_tot = natom_from_shape(shape)*z_val
+            nelec_tot = _nat_from_shape(shape)*z_val
             if nelec_tot < 1:
                 print("WARNING: program possibly cannot grep reasonable `z_valence` from pseudopotential.")
             nbands = int(max(nelec_tot, 2))
@@ -354,7 +483,7 @@ def siab_settings(user_settings: dict, minimal_basis: list, z_val: float = 0):
         nbands_ref = orbital["nbands_ref"]
         nbands_ref = [nbands_ref] if not isinstance(nbands_ref, list) else nbands_ref
         assert len(nbands_ref) == len(shape), "nbands_ref should have the same length as shape"
-        result["orbitals"][iorb]["nbands_ref"] = [nbands_from_str(n, s, z_val) for n, s in zip(nbands_ref, shape)]
+        result["orbitals"][iorb]["nbands_ref"] = [_nbands_from_str(n, s, z_val) for n, s in zip(nbands_ref, shape)]
         result["orbitals"][iorb]["folder"] = index
         
     # indexing the nzeta_from -> nzeta
@@ -1125,10 +1254,10 @@ STRU4       trimer      18      2       1      2.6 3.2 3.8
 
     def test_keywords_translate(self):
 
-        self.assertEqual(translate_oldinp_keyword("Ecut"), "ecutwfc")
-        self.assertEqual(translate_oldinp_keyword("Rcut"), "bessel_nao_rcut")
-        self.assertEqual(translate_oldinp_keyword("Pseudo_dir"), "pseudo_dir")
-        self.assertEqual(translate_oldinp_keyword("sigma"), "smearing_sigma")      
+        self.assertEqual(_key_mapping("Ecut"), "ecutwfc")
+        self.assertEqual(_key_mapping("Rcut"), "bessel_nao_rcut")
+        self.assertEqual(_key_mapping("Pseudo_dir"), "pseudo_dir")
+        self.assertEqual(_key_mapping("sigma"), "smearing_sigma")      
 
     def test_unpack_siab_settings(self):
         self.maxDiff = None
@@ -1208,7 +1337,7 @@ STRU4       trimer      18      2       1      2.6 3.2 3.8
             'optimizer': 'pytorch.SWAT', 
             'spill_coefs': [2.0, 1.0]
         }
-        result = convert_oldinp_tojson(clean_oldversion_input)
+        result = _txt_old_conv(clean_oldversion_input)
         clean_oldversion_input = {
             'EXE_mpi': 'mpirun -np 1', 
             'EXE_pw': 'abacus --version', 
@@ -1235,7 +1364,7 @@ STRU4       trimer      18      2       1      2.6 3.2 3.8
             'optimizer': 'pytorch.SWAT', 
             'spill_coefs': [2.0, 1.0]
         }
-        result = convert_oldinp_tojson(clean_oldversion_input)
+        result = _txt_old_conv(clean_oldversion_input)
 
     def test_abacus_settings(self):
         user_settings = read("SIAB/example_Si/SIAB_INPUT")
@@ -1269,25 +1398,25 @@ STRU4       trimer      18      2       1      2.6 3.2 3.8
         self.assertEqual(result, [2, 2, 1])
     
     def test_nbands_from_str(self):
-        result = nbands_from_str(4, "dimer", 100)
+        result = _nbands_from_str(4, "dimer", 100)
         self.assertEqual(result, 4)
-        result = nbands_from_str(6, "trimer", 100)
+        result = _nbands_from_str(6, "trimer", 100)
         self.assertEqual(result, 6)
-        result = nbands_from_str("occ", "dimer", 4)
+        result = _nbands_from_str("occ", "dimer", 4)
         self.assertEqual(result, 4)
-        result = nbands_from_str("occ", "trimer", 6)
+        result = _nbands_from_str("occ", "trimer", 6)
         self.assertEqual(result, 9)
-        result = nbands_from_str("occ+5", "dimer", 4)
+        result = _nbands_from_str("occ+5", "dimer", 4)
         self.assertEqual(result, 9)
-        result = nbands_from_str("occ-2", "trimer", 6)
+        result = _nbands_from_str("occ-2", "trimer", 6)
         self.assertEqual(result, 7)
-        result = nbands_from_str("auto", "dimer", 4)
+        result = _nbands_from_str("auto", "dimer", 4)
         self.assertEqual(result, "auto")
-        result = nbands_from_str("auto", "trimer", 6)
+        result = _nbands_from_str("auto", "trimer", 6)
         self.assertEqual(result, "auto")
-        result = nbands_from_str("all", "dimer", 4)
+        result = _nbands_from_str("all", "dimer", 4)
         self.assertEqual(result, 8)
-        result = nbands_from_str("all", "trimer", 6)
+        result = _nbands_from_str("all", "trimer", 6)
         self.assertEqual(result, 18)
 
     def test_cal_nbands_fill_lmax(self):
