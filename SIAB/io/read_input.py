@@ -1,3 +1,23 @@
+'''Read ABACUS-ORBGEN input script
+The logic of ABACUS-ORBGEN input script is a little complicated, because 
+the denpendecy between orbitals and ABACUS run is not direct enough.
+
+There are mainly two parts needed to be defined in input, the set of
+orbitals and set of structures (reference systems).
+
+orbitals
+--------
+The orbitals can be uniquely defined by `ecut`, `rcut`, `nzeta`. Its value
+can be uniquely defined if with a set of reference systems.
+
+structures
+----------
+The generation of orbitals needs extract information from the calculation
+of structures. For pw cases, the maximal angular momentum over all atom
+types lmaxmax should be explicitly defined, this introduce the dependency
+of calculation on orbitals.
+
+'''
 import re
 import os
 import json
@@ -204,22 +224,162 @@ def nbands_from_str(option: str|float|int, shape: str, z_val: float):
             return eval(option.replace("occ", str(occ)))
     return int(option)
 
-def abacus_settings(user_settings: dict, minimal_basis: list = None, z_val: float = 0, z_core: float = 0):
+def _fit_monomer(sysparams, orbparams):
+    """function for checking if the monomer is set to be fitted
+    
+    Parameters
+    ----------
+    sysparams: list of dict
+        the system parameters {"shape": str, "nbands": int, "nspin": int, "bond_lengths": list}
+    orbparams: list of dict
+        the orbital parameters {"zeta_notation": str, "shape": str, "nbands_ref": int, "orb_ref": str}
+    
+    Returns
+    -------
+    bool
+        True if the monomer is set to be fitted, False otherwise
+    """
+    out = False
+    shape = [rs["shape"] for rs in sysparams]
+    # case 1: orbitals' "shape" set as "monomer"
+    # case 2: orbitals' "shape" is a index that points to the monomer
+    # case 3: orbitals' "shape" is a list in which one index points to the monomer
+    for orb in orbparams:
+        shape_index = orb["shape"]
+        if shape_index == "monomer":
+            out = True
+            break
+        if isinstance(shape_index, int):
+            if shape[shape_index] == "monomer":
+                out = True
+                break
+        if isinstance(shape_index, list):
+            if "monomer" in [shape[s] for s in shape_index]:
+                out = True
+                break
+    return out
 
-    # copy all possible shared parameters (shared by all reference systems)
+def abacus_settings(user_settings: dict, 
+                    minimal_basis = None, 
+                    zval = 0,
+                    zcore = 0):
+    """extract the information for running abacus cases
+    
+    Parameters
+    ----------
+    user_settings: dict
+        the parsed, raw input directly form user
+    minimal_basis: list
+        the minimal basis read from pseudopotential, like [2, 2, 1]. There are cases
+        that pseudopotential files will not be read, such as no nzeta needed to be
+        inferred from pseudopotential.
+    z_val: float
+        number of valence electrons
+    z_core: float
+        number of core electrons
+    
+    Returns
+    -------
+    list of dict
+        the settings for abacus calculation, one for one shape (thus assumed that
+        different perturbation share the same input parameters).
+    """
     all_params = abacus_params()
+    # there are two places supporting user to set ABACUS parameters
+    # one is explicit, the other is not. The explicit one is directly at root level,
+    # the other is adding parameters in `reference_systems` section. The former will
+    # be overwritten by the latter if the same parameter is set in both places.
     template = {key: value for key, value in user_settings.items() if key in all_params}
-    # then create copies for each reference system
+
+    #################################################################################
+    #                         CHANGE LOG: ----                                      #
+    #                                    * * *                                      #
+    # from ABACUS-ORBGEN v2.0+, with bfgs optimizer, the `spill_guess atomic`       #
+    # feature is supported. If the "monomer" is not explicitly set in input, it     #
+    # will be automatically configured. Its lmaxmax will be set as the maximal      #
+    # lmaxmax over all reference systems, and nbands will be inferred from the lmax #
+    # and z_valence.                                                                #
+    #                                                                               #
+    #                         CHANGE LOG: ABACUS-ORBGEN v3.0                        #
+    #                                    * * *                                      #
+    # from ABACUS-ORBGEN v3.0, the pathway from lmaxmax infer nbands may not be     #
+    # possible, because the zeta_notation can be set as "auto", which means the     #
+    # orbital configuration will be inferred from an analysis on bands in range     #
+    # (0, nbands_ref). Therefore the nbands of monomer cannot be known here, and    #
+    # will be set as "undefined".                                                   #
+    #################################################################################
+
+    if False:
+        # there is case that user really want to use the monomer as reference system:
+        fit_monomer = _fit_monomer(user_settings["reference_systems"], user_settings["orbitals"])
+        if fit_monomer:
+            print(f"WARNING: orbital generated from monomer may have poor transferability",
+                ", use your orbital with care.", flush=True)
+
+        # complicated logic, for different optimizer, the spill_guess has different default
+        # values...
+        dg = {"pytorch.SWAT": "identity", "bfgs": "atomic", "none": "atomic"}
+        optimizer = user_settings.get("optimizer", "bfgs")
+        init_with_monomer = user_settings.get("spill_guess", dg[optimizer]) == "atomic"
+        # init_with_monomer: initialize coefs with monomer
+
+        absent_monomer = not any([rs["shape"] == "monomer"
+                                for rs in user_settings["reference_systems"]])
+        # absent_monomer: monomer is not set in reference systems
+
+        assert fit_monomer and not absent_monomer, "ERROR: monomer is selected to fit orbitals\
+    but not set in reference systems, this is not allowed."
+        if init_with_monomer:
+            if absent_monomer:
+                print("AUTOSET: monomer is not explictly set its parameters => AUTOSET", flush=True)
+            else:
+                print("ORBGEN: will use user-defined monomer settings perform initial guess", flush=True)
+
+        autoset_monomer = not fit_monomer
+        # the autoset will only be triggered if not the case that user wants to fit it, it will
+        # only be needed for spill_guess atomic
+
+
+
+        jy = user_settings.get("fit_basis", "jy") == "jy"
+        infer_nzeta = any([orb["zeta_notation"] == "auto"
+                        for orb in user_settings["orbitals"]])
+        assert not (jy == False and infer_nzeta), \
+            "ERROR: for `fit_basis pw`, the zeta_notation auto-deduction is not supported."
+        infer_monomer = infer_nzeta and autoset_monomer
+        # infer_monomer: the nbands and lmaxmax of monomer cannot be determined here
+
+        infer_lmaxmax = any([rs.get("lmaxmax", "auto") == "auto"
+                            for rs in user_settings["reference_systems"]])
+        infer_nband = any([rs.get("nbands", "auto") == "auto"
+                        for rs in user_settings["reference_systems"]])
+
+
+
+    autoset_monomer = False
     refsys = user_settings.get("reference_systems", [])
     autoset_monomer = bool(user_settings.get("spill_guess", "random") == "atomic" \
          and len([True for s in refsys if s["shape"] == "monomer"]) == 0)
+    # if spill_guess is atomic and monomer is not in reference systems, then autoset 
+    # monomer, otherwise, leave it as it is.
+
+    # for pw and jy (in which the zeta_notation is not set as "auto"), lmaxmax 
+    # can be calculated easily
+    # for jy with zeta_notation set as "auto", both lmaxmax and nband cannot be
+    # calculated
+
+    
+    
+    
+
+
     # set `autoset_mononer` to True if spill_guess is atomic and monomer is not in reference systems
     refsys.append({"shape": "monomer"}) if autoset_monomer else None
     nsystem = len(refsys)
 
     b1 = (nsystem > 0 and not autoset_monomer)
     b2 = (nsystem > 1 and autoset_monomer)
-    assert (b1 or b2), "number of reference systems should be at least 2 if spill_guess is atomic, otherwise at least 1"
+    assert (b1 or b2), "not enough reference systems for abacus calculation"
 
     result = [template.copy() for _ in range(nsystem)]
     # then parameters cannot share
@@ -231,14 +391,16 @@ def abacus_settings(user_settings: dict, minimal_basis: list = None, z_val: floa
     with_polarization = [False]*nsystem
     for iorb in range(len(user_settings["orbitals"])):
         val = user_settings["orbitals"][iorb]["shape"]
-        """DEVELOPE DETAILS
-        I recognize there may be the need that defining different set of bond-length lists but
-        on the same shape, for example, the dimer with different bond lengths. Also on the other
-        hand it is possible for user to use not only one set of reference structures for generating
-        one set of orbitals. Therefore the `shape` should support both scalar and list value, of
-        both int (the index) and str (the shape name) type.
-        
-        Changed at Aug 6th, 2024"""
+    #################################################################################
+    #                          CHANGE LOG: Aug 6th, 2024                            #
+    #                                    * * *                                      #
+    # I recognize there may be the need that defining different set of bond-length  #
+    # lists but on the same shape, for example, the dimer with different bond       #
+    # lengths. Also on the other hand it is possible for user to use not only one   #
+    # set of reference structures for generating one set of orbitals. Therefore the #
+    # `shape` should support both scalar and list value, of both int (the index)    #
+    # and str (the shape name) type.                                                #
+    #################################################################################
         val = [val] if not isinstance(val, list) else val
         assert all(isinstance(v, (str, int)) for v in val)
         # will not support the mixing of str and int in the list...
@@ -255,7 +417,7 @@ def abacus_settings(user_settings: dict, minimal_basis: list = None, z_val: floa
         nbands = refsys[irs].get("nbands", "auto")
         if nbands == "auto":
             shape = refsys[irs]["shape"]
-            nelec_tot = natom_from_shape(shape)*z_val
+            nelec_tot = natom_from_shape(shape)*zval
             if nelec_tot < 1:
                 print("WARNING: program possibly cannot grep reasonable `z_valence` from pseudopotential.")
             nbands = int(max(nelec_tot, 2))
@@ -275,7 +437,7 @@ def abacus_settings(user_settings: dict, minimal_basis: list = None, z_val: floa
                 result[irs][key] = value
     # set monomer
     if autoset_monomer:
-        nbands_monomer = cal_nbands_fill_lmax(z_val, z_core, lmax_monomer) # fill the lmax shell
+        nbands_monomer = cal_nbands_fill_lmax(zval, zcore, lmax_monomer) # fill the lmax shell
         result[shape_index_mapping.index("monomer")].update(
             {"lmaxmax": lmax_monomer, "nbands": nbands_monomer})
     return result
@@ -336,16 +498,16 @@ def siab_settings(user_settings: dict, minimal_basis: list, z_val: float = 0):
     for iorb, orbital in enumerate(user_settings["orbitals"]):
         # here the nzeta is the first time to be inferred. Since SIAB-v3.0, the nzeta can
         # be inferred after DFT calculation, the only thing can always be known now is
-        # the dependency between orbitals, therefore the function `nzetagen` is allowed
+        # the dependency between orbitals, therefore the function `_cal_nzeta` is allowed
         # to return index of orbitals if it is for handling `orb_ref` instead of `zeta_
         # notation`.
-        tmp = nzetagen(orbital["zeta_notation"], minimal_basis)\
+        tmp = _cal_nzeta(orbital["zeta_notation"], minimal_basis)\
             if orbital["zeta_notation"] != "auto" else "auto"
         assert not isinstance(tmp, int), "`zeta_notation` should not be inferred as an integer"
         result["orbitals"][iorb]["nzeta"] = tmp
         result["orbitals"][iorb]["nzeta_from"] = None \
             if orbital["orb_ref"] == "none" \
-            else nzetagen(orbital["orb_ref"], minimal_basis)
+            else _cal_nzeta(orbital["orb_ref"], minimal_basis)
         # implement "occ", "occ+%d", "occ-%d" and "all" for nbands_ref
         # support index to link reference structures
         shape = orbital["shape"]
@@ -364,7 +526,7 @@ def siab_settings(user_settings: dict, minimal_basis: list, z_val: float = 0):
             orb["nzeta_from"] = nzeta.index(orb["nzeta_from"])
     return result
 
-def nzetagen(zeta_notation, minimal_basis: list):
+def _cal_nzeta(zeta, minbas: list):
     """generate the nzeta from the zeta_notation. zeta_notation can be of three formats: 
     2s2p1d, DZP or [2, 2, 1].
     
@@ -372,7 +534,7 @@ def nzetagen(zeta_notation, minimal_basis: list):
     ----------
     zeta_notation: str or list
         the zeta notation, can be of three formats: 2s2p1d, DZP or [2, 2, 1]
-    minimal_basis: list
+    minbas: list
         the minimal basis read from pseudopotential, like [2, 2, 1]
     
     Returns
@@ -381,16 +543,16 @@ def nzetagen(zeta_notation, minimal_basis: list):
         the nzeta, like [2, 2, 1]
     """
 
-    assert isinstance(minimal_basis, list), "minimal_basis should be a list"
+    assert isinstance(minbas, list), "minbas should be a list"
 
     # 
-    if isinstance(zeta_notation, list) and all([isinstance(v, int) for v in zeta_notation]):
-        return zeta_notation
-    if isinstance(zeta_notation, str) and re.match(r"([SDTQ5-9]?Z)(([SDTQ5-9]?P)*)", zeta_notation):
-        return siptb.orbconf_fromxzyp(zeta_notation, minimal_basis, as_list=True)
-    if isinstance(zeta_notation, str) and re.match(r"(\d+[a-z])+", zeta_notation):
+    if isinstance(zeta, list) and all([isinstance(v, int) for v in zeta]):
+        return zeta
+    if isinstance(zeta, str) and re.match(r"([SDTQ5-9]?Z)(([SDTQ5-9]?P)*)", zeta):
+        return siptb.orbconf_fromxzyp(zeta, minbas, as_list=True)
+    if isinstance(zeta, str) and re.match(r"(\d+[a-z])+", zeta):
         spectra = ["s", "p", "d", "f", "g", "h", "i", "k", "l", "m", "n", "o"]
-        result = {v[-1]: int(v[:-1]) for v in re.findall(r"\d+[a-z]", zeta_notation)}
+        result = {v[-1]: int(v[:-1]) for v in re.findall(r"\d+[a-z]", zeta)}
         result = [result.get(s, 0) for s in spectra]
         while result[-1] == 0:
             result.pop()
@@ -398,10 +560,10 @@ def nzetagen(zeta_notation, minimal_basis: list):
     # change log: the dependency between orbitals now can support "auto" or index, because 
     # the connection is known before performing DFT calculations, while the nzeta might be
     # unknown. Support since SIAB-v3.0
-    if isinstance(zeta_notation, int):
-        return zeta_notation
+    if isinstance(zeta, int):
+        return zeta
     
-    assert False, "ERROR: \"zeta_notation\" is not in the correct format. It should be like \"2s2p1d\" or \"DZP\" or [2, 2, 1]"
+    assert False, "ERROR: \"zeta\" is not in the correct format. It should be like \"2s2p1d\" or \"DZP\" or [2, 2, 1]"
 
 def environment_settings(user_settings: dict):
 
@@ -437,14 +599,23 @@ Raise ValueError, Quit..."""
     return list(zip(shapes, bond_lengths))
 
 def from_pseudopotential(pseudopotential: dict):
-    """convert the pseudopotential to SIAB input"""
-    symbol = pseudopotential["element"]
-    minimal_basis = pseudopotential["val_conf"]
-    z_val = pseudopotential["z_val"]
+    """extract element, minimal_basis and z_val from pseudopotential
+    parsed.
+    
+    Parameters
+    ----------
+    pseudopotential: dict
+        the parsed pseudopotential
+    
+    Returns
+    -------
+    dict
+        the extracted information
+    """
     return {
-        "element": symbol,
-        "minimal_basis": minimal_basis,
-        "z_val": z_val
+        "element": pseudopotential["element"],
+        "minimal_basis": pseudopotential["val_conf"],
+        "z_val": pseudopotential["z_val"]
     }
 
 def description(symbol: str, user_settings: dict):
@@ -1257,15 +1428,15 @@ STRU4       trimer      18      2       1      2.6 3.2 3.8
             self.assertEqual(i["lmaxmax"], 3)
 
     def test_nzetagen(self):
-        result = nzetagen("DZP", [2, 1, 1])
+        result = _cal_nzeta("DZP", [2, 1, 1])
         self.assertEqual(result, [4, 2, 2, 1])
-        result = nzetagen("1s1p", [2, 1, 1])
+        result = _cal_nzeta("1s1p", [2, 1, 1])
         self.assertEqual(result, [1, 1])
-        result = nzetagen("2s2p1d", [2, 1, 1])
+        result = _cal_nzeta("2s2p1d", [2, 1, 1])
         self.assertEqual(result, [2, 2, 1])
-        result = nzetagen("1s0p1d", [2, 1, 1])
+        result = _cal_nzeta("1s0p1d", [2, 1, 1])
         self.assertEqual(result, [1, 0, 1])
-        result = nzetagen([2, 2, 1], [2, 1, 1])
+        result = _cal_nzeta([2, 2, 1], [2, 1, 1])
         self.assertEqual(result, [2, 2, 1])
     
     def test_nbands_from_str(self):

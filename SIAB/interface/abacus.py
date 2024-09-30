@@ -5,6 +5,7 @@ import SIAB.io.read_output as read_output
 import SIAB.data.interface as db
 from scipy.optimize import curve_fit
 import re
+import unittest
 
 BLSCAN_WARNMSG = """
 WARNING: since SIAB version 2.1(2024.6.3), the original functionality invoked by value \"auto\" is replaced by 
@@ -765,11 +766,15 @@ def normal(general: dict,
     
     # ========= HERE DIFFERENT PARALLELIZATION ON ABACUS RUN CAN BE IMPLEMENTED ===========
     # presently it is only run in serial...
+            monomer_later = "monomer" in folder
+            monomer_later = monomer_later and calculation_setting["basis_type"] == "lcao"
+            monomer_later = monomer_later and calculation_setting["nbands"] == "undefined"
+            runtype = 'run' if not (test or monomer_later) else 'dry-run'
             _jtg = sienv.submit(folder=folder,
                                 module_load_command=env_settings["environment"],
                                 mpi_command=env_settings["mpi_command"],
                                 program_command=env_settings["abacus_command"],
-                                test=test)
+                                runtype=runtype)
     # =====================================================================================
     """wait for all jobs to finish"""
     return folders
@@ -779,7 +784,8 @@ def read_INPUT(folder: str = "") -> dict:
     if folder.startswith("INPUT_PARAMETERS"):
         lines = folder.split("\n")
     else:
-        with open(folder+"/INPUT", "r") as f:
+        folder = os.path.join(folder, "INPUT") if not os.path.isfile(folder) else folder
+        with open(folder, "r") as f:
             lines = f.readlines()
 
     pattern = r"^(\s*)([\w_]+)(\s+)([^\#]+)(.*)$"
@@ -1228,3 +1234,4 @@ qo_switch                      0 #0: no QO analysis; 1: QO analysis
 qo_basis                       szv #type of QO basis function: hydrogen: hydrogen-like basis, pswfc: read basis from pseudopotential
 qo_thr                         1e-06 #accuracy for evaluating cutoff radius of QO basis function
 """
+
